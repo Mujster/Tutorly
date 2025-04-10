@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const cookieParser = require('cookie-parser');
@@ -10,17 +9,13 @@ const { sendVerificationEmail } = require('./utils/emailService');
 
 dotenv.config();
 
-// In-memory user storage when MongoDB is unavailable
 const inMemoryUsers = new Map();
 let useInMemoryStore = true;
 
 const app = express();
 const PORT = process.env.PORT;
 
-app.use(cors({
-  origin: process.env.FRONTEND_URL,
-  credentials: true
-}));
+app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
 

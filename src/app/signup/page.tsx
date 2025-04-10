@@ -42,7 +42,7 @@ export default function SignupPage() {
         return
       }
       
-      const response = await axios.post("http://localhost:5000/register", formData)
+      const response = await axios.post("https://tutorly-ai.vercel.app/register", formData)
       if(response.status === 201){
         alert("Account created successfully! Please check your email to verify your account.")
         router.push("/login")      
