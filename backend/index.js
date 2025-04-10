@@ -10,6 +10,10 @@ const { sendVerificationEmail } = require('./utils/emailService');
 
 dotenv.config();
 
+// In-memory user storage when MongoDB is unavailable
+const inMemoryUsers = new Map();
+let useInMemoryStore = true;
+
 const app = express();
 const PORT = process.env.PORT;
 
@@ -20,11 +24,23 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-mongoose.connect(process.env.MONGO_URI)
-.then(() => {console.log('Connected to Tutorly DB')})
-.catch((err) => {
-    console.log(err);
-});
+function cleanupExpiredSessions() {
+  if (useInMemoryStore) {
+    console.log('Cleaning up expired sessions...');
+    const now = new Date();
+    for (const [email, userData] of inMemoryUsers.entries()) {
+      try {
+        jwt.verify(userData.token, process.env.JWT_SECRET);
+      } catch (err) {
+        console.log(`Removing expired session for ${email}`);
+        inMemoryUsers.delete(email);
+      }
+    }
+  }
+}
+
+// Run cleanup every hour
+setInterval(cleanupExpiredSessions, 60 * 60 * 1000);
 
 app.post('/login',async (req, res) => {
     try{
@@ -32,20 +48,37 @@ app.post('/login',async (req, res) => {
         if(!email || !password){ 
             return res.status(400).json({error: 'Please enter all fields'});
         }
-        const user = await User.findOne({email:email, password:password});
+        
+        let user = null;
+        if (useInMemoryStore) {
+            const memUser = inMemoryUsers.get(email);
+            if (memUser && memUser.password === password) {
+                user = memUser;
+            }
+        } else {
+            user = await User.findOne({email:email, password:password});
+        }
+        
         if(!user){
             return res.status(400).json({error: 'Authentication failed'});
         }
+        
         const token = jwt.sign({email:email},process.env.JWT_SECRET,{expiresIn:'3h'});
-        user.token=token;
-        await user.save();
+        
+        if (useInMemoryStore) {
+            user.token = token;
+            inMemoryUsers.set(email, user);
+        } else {
+            user.token = token;
+            await user.save();
+        }
+        
         if(!user.isVerified){
             return res.status(200).json({error: 'Please verify your email',token:token});
         }
         
         res.cookie('jwt', token, { httpOnly: true, secure: true });
         return res.status(200).json({message: 'Login successful', token,isVerified: user.isVerified});
-
     }
     catch(err){
         console.log(err);
@@ -61,30 +94,50 @@ app.post('/register',async (req, res) => {
             return res.status(400).json({error: 'Please enter all fields'});
         }
         
-        const existingUser = await User.findOne({email});
-        if(existingUser) {
+        // Check for existing user
+        let userExists = false;
+        if (useInMemoryStore) {
+            userExists = inMemoryUsers.has(email);
+        } else {
+            const existingUser = await User.findOne({email});
+            userExists = !!existingUser;
+        }
+        
+        if(userExists) {
             return res.status(400).json({error: 'User already exists'});
         }
         
-        const user = new User({
-            name,
-            email,
-            password,
-            isVerified: false
-        });
-
-        const token=jwt.sign({email:email},process.env.JWT_SECRET,{expiresIn:'3h'});
+        const token = jwt.sign({email:email}, process.env.JWT_SECRET, {expiresIn:'3h'});
+        
+        if (useInMemoryStore) {
+            // Store in memory
+            inMemoryUsers.set(email, {
+                name,
+                email,
+                password,
+                token,
+                isVerified: false,
+                createdAt: new Date()
+            });
+        } else {
+            // Store in MongoDB
+            const user = new User({
+                name,
+                email,
+                password,
+                isVerified: false,
+                token
+            });
+            await user.save();
+        }
+        
         res.cookie('jwt', token, { httpOnly: true, secure: true });
-        user.token=token;   
-
-        // Save the user
-        await user.save();
-
+        
         await sendVerificationEmail(email, name, token);
         
         return res.status(201).json({
             message: 'User created successfully. Please check your email to verify your account.',
-            isVerified:user.isVerified
+            isVerified: false
         });
     }
     catch(err){
@@ -99,7 +152,18 @@ app.post('/resend-email',async(req,res)=>{
         if(!email || !token){
             return res.status(400).json({error: 'Please enter all fields'});
         }
-        const user=await User.findOne({email:email});
+        
+        let user = null;
+        if (useInMemoryStore) {
+            user = inMemoryUsers.get(email);
+        } else {
+            user = await User.findOne({email:email});
+        }
+        
+        if (!user) {
+            return res.status(404).json({error: 'User not found'});
+        }
+        
         sendVerificationEmail(email,user.name,token);
         return res.status(200).json({message: 'Verification email resent successfully'});   
     }
@@ -112,7 +176,19 @@ app.post('/resend-email',async(req,res)=>{
 app.get('/tutorly/verify-email', async(req, res) => {
     try {
         const token = req.query.token;
-        const user = await User.findOne({token: token});
+        
+        let user = null;
+        if (useInMemoryStore) {
+            // Find user by token in memory store
+            for (const [email, userData] of inMemoryUsers.entries()) {
+                if (userData.token === token) {
+                    user = userData;
+                    break;
+                }
+            }
+        } else {
+            user = await User.findOne({token: token});
+        }
 
         const successHTML = `
         <!DOCTYPE html>
@@ -390,8 +466,15 @@ app.get('/tutorly/verify-email', async(req, res) => {
             if (user.isVerified) {
                 return res.status(200).send(alreadyVerifiedHTML);
             }
-            user.set('isVerified', true);
-            await user.save();
+            
+            if (useInMemoryStore) {
+                user.isVerified = true;
+                inMemoryUsers.set(user.email, user);
+            } else {
+                user.set('isVerified', true);
+                await user.save();
+            }
+            
             return res.status(200).send(successHTML);
         }
     } catch (err) {
@@ -483,6 +566,6 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}. Connected To Memory Store: ${useInMemoryStore}`);
 });
 

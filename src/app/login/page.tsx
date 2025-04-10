@@ -36,7 +36,7 @@ export default function LoginPage() {
     setIsLoading(true)
     setError(null)
     try {
-      const response = await axios.post("http://localhost:5000/login", formData);
+      const response = await axios.post("https://tutorly-ai.vercel.app/login", formData);
       if(response.status === 200){
         setToken(response.data.token);
         const isVerified = response.data.isVerified;
@@ -65,7 +65,7 @@ export default function LoginPage() {
       console.log(formData.email)
       console.log(token)
       setIsLoading(true);
-      const response = await axios.post("http://localhost:5000/resend-email", {
+      const response = await axios.post("https://tutorly-ai.vercel.app/resend-email", {
         email: formData.email,
         token: token
       });
